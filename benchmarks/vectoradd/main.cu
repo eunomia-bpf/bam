@@ -319,8 +319,14 @@ int main(int argc, char *argv[]) {
                 cuda_err_chk(cudaMemcpy(b_d, b_h, n_elems_size, cudaMemcpyHostToDevice));
                 //TODO: we can move that read op here.
                 //file.read((char*)edgeList_d, edge_size);
+#if CUDART_VERSION >= 12000
+                cudaMemLocation location = {cudaMemLocationTypeDevice, (int)settings.cudaDevice};
+                cuda_err_chk(cudaMemAdvise(a_d, n_elems_size, cudaMemAdviseSetReadMostly, location));
+                cuda_err_chk(cudaMemAdvise(b_d, n_elems_size, cudaMemAdviseSetReadMostly, location));
+#else
                 cuda_err_chk(cudaMemAdvise(a_d, n_elems_size, cudaMemAdviseSetReadMostly, settings.cudaDevice));
                 cuda_err_chk(cudaMemAdvise(b_d, n_elems_size, cudaMemAdviseSetReadMostly, settings.cudaDevice));
+#endif
                 cuda_err_chk(cudaMemGetInfo(&freebyte, &totalbyte));
                 break;
                 }
@@ -347,18 +353,24 @@ int main(int argc, char *argv[]) {
 
                 cuda_err_chk(cudaMallocManaged((void**)&a_d, size_4k_aligned));
                 cuda_err_chk(cudaMallocManaged((void**)&b_d, size_4k_aligned));
+#if CUDART_VERSION >= 12000
+                cudaMemLocation location2 = {cudaMemLocationTypeDevice, (int)settings.cudaDevice};
+                cuda_err_chk(cudaMemAdvise(a_d, size_4k_aligned, cudaMemAdviseSetAccessedBy, location2));
+                cuda_err_chk(cudaMemAdvise(b_d, size_4k_aligned, cudaMemAdviseSetAccessedBy, location2));
+#else
                 cuda_err_chk(cudaMemAdvise(a_d, size_4k_aligned, cudaMemAdviseSetAccessedBy, settings.cudaDevice));
                 cuda_err_chk(cudaMemAdvise(b_d, size_4k_aligned, cudaMemAdviseSetAccessedBy, settings.cudaDevice));
+#endif
                 high_resolution_clock::time_point ft1 = high_resolution_clock::now();
                
-                if (fread(a_d, sizeof(uint64_t), count_4k_aligned, fa_tmp) <0) {
+                if (fread(a_d, sizeof(uint64_t), count_4k_aligned, fa_tmp) != count_4k_aligned) {
                     printf("A file fread failed: %llu \t %llu\n", count_4k_aligned, n_elems+2);
                     exit(1);
                 }   
                 fclose(fa_tmp);                                                                                                              
                 close(fda);
                 
-                if (fread(b_d, sizeof(uint64_t), count_4k_aligned, fb_tmp) <0) {
+                if (fread(b_d, sizeof(uint64_t), count_4k_aligned, fb_tmp) != count_4k_aligned) {
                     printf("B file fread failed\n");
                     exit(1);
                 }   
@@ -458,7 +470,7 @@ int main(int argc, char *argv[]) {
         array_t<uint64_t>* h_Carray;
 
 
-        uint64_t cfileoffset = 720*1024*1024*1024;
+        uint64_t cfileoffset = 720ULL * 1024ULL * 1024ULL * 1024ULL;
         if((type == BASELINE_PC) || (type == OPTIMIZED_PC)) {
             //TODO: fix for 2 arrays
             h_pc =new page_cache_t(pc_page_size, pc_pages, settings.cudaDevice, ctrls[0][0], (uint64_t) 64, ctrls);

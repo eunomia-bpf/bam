@@ -13,6 +13,7 @@
 
 #ifdef _CUDA
 #include <nv-p2p.h>
+#include "nvidia_wrapper.h"
 
 struct gpu_region
 {
@@ -34,7 +35,7 @@ static struct map* create_descriptor(const struct ctrl* ctrl, u64 vaddr, unsigne
     unsigned long i;
     struct map* map = NULL;
 
-    map = kvmalloc(sizeof(struct map) + (n_pages - 1) * sizeof(uint64_t), GFP_KERNEL);
+    map = kvmalloc(sizeof(struct map) + n_pages * sizeof(uint64_t), GFP_KERNEL);
     if (map == NULL)
     {
         printk(KERN_CRIT "Failed to allocate mapping descriptor\n");
@@ -64,11 +65,16 @@ static struct map* create_descriptor(const struct ctrl* ctrl, u64 vaddr, unsigne
 
 void unmap_and_release(struct map* map)
 {
+    if (map == NULL)
+        return;
+        
     list_remove(&map->list);
 
     if (map->release != NULL && map->data != NULL)
     {
         map->release(map);
+        map->release = NULL;  /* Prevent double release */
+        map->data = NULL;
     }
 
     kvfree(map);
@@ -78,9 +84,14 @@ void unmap_and_release(struct map* map)
 
 struct map* map_find(const struct list* list, u64 vaddr)
 {
-    const struct list_node* element = list_next(&list->head);
+    const struct list_node* element;
     struct map* map = NULL;
+    struct map* found = NULL;
+    unsigned long flags;
 
+    spin_lock_irqsave(&((struct list*)list)->lock, flags);
+    
+    element = list_next(&list->head);
     while (element != NULL)
     {
         map = container_of(element, struct map, list);
@@ -89,14 +100,17 @@ struct map* map_find(const struct list* list, u64 vaddr)
         {
             if (map->vaddr == (vaddr & PAGE_MASK) || map->vaddr == (vaddr & GPU_PAGE_MASK))
             {
-                return map;
+                found = map;
+                break;
             }
         }
 
         element = list_next(element);
     }
+    
+    spin_unlock_irqrestore(&((struct list*)list)->lock, flags);
 
-    return NULL;
+    return found;
 }
 
 
@@ -148,7 +162,7 @@ static long map_user_pages(struct map* map)
 #warning "Building for older kernel, not properly tested"
     retval = get_user_pages(map->vaddr, map->n_addrs, 1, 0, pages, NULL);
 #else
-    retval = get_user_pages(map->vaddr, map->n_addrs, FOLL_WRITE, pages, NULL);
+    retval = get_user_pages(map->vaddr, map->n_addrs, FOLL_WRITE, pages);
 #endif
     if (retval <= 0)
     {
@@ -224,39 +238,48 @@ static void force_release_gpu_memory(struct map* map)
 {
     struct gpu_region* gd = (struct gpu_region*) map->data;
     struct list* list = map->ctrl_list;
+    unsigned long flags;
 
     if (gd != NULL)
     {
-        if (gd->mappings != NULL)
+        if (gd->mappings != NULL && list != NULL)
         {
-            const struct list_node* element = list_next(&list->head);
+            const struct list_node* element;
             struct ctrl* ctrl;
-
             uint32_t j = 0;
+
+            spin_lock_irqsave(&list->lock, flags);
+            element = list_next(&list->head);
             while (element != NULL)
             {
                 ctrl = container_of(element, struct ctrl, list);
-                if (gd->mappings[j] != NULL)
+                if (gd->mappings[j] != NULL && ctrl->pdev != NULL)
                     nvidia_p2p_dma_unmap_pages(ctrl->pdev, gd->pages, gd->mappings[j++]);
 
                 element = list_next(element);
             }
+            spin_unlock_irqrestore(&list->lock, flags);
+            
             kfree(gd->mappings);
-
+            gd->mappings = NULL;
         }
 
         if (gd->pages != NULL)
         {
             nvidia_p2p_free_page_table(gd->pages);
+            gd->pages = NULL;
         }
 
         kfree(gd);
         map->data = NULL;
+        map->release = NULL;  /* Prevent double release */
 
         printk(KERN_DEBUG "Nvidia driver forcefully reclaimed %lu GPU pages\n", map->n_addrs);
     }
 
-    unmap_and_release(map);
+    /* Remove from list and free the map structure */
+    list_remove(&map->list);
+    kvfree(map);
 }
 #endif
 
@@ -267,30 +290,36 @@ void release_gpu_memory(struct map* map)
 {
     struct gpu_region* gd = (struct gpu_region*) map->data;
     struct list* list = map->ctrl_list;
+    unsigned long flags;
 
     if (gd != NULL)
     {
-        if (gd->mappings != NULL)
+        if (gd->mappings != NULL && list != NULL)
         {
-            const struct list_node* element = list_next(&list->head);
+            const struct list_node* element;
             struct ctrl* ctrl;
-
             uint32_t j = 0;
+
+            spin_lock_irqsave(&list->lock, flags);
+            element = list_next(&list->head);
             while (element != NULL)
             {
                 ctrl = container_of(element, struct ctrl, list);
-                if (gd->mappings[j] != NULL)
+                if (gd->mappings[j] != NULL && ctrl->pdev != NULL)
                     nvidia_p2p_dma_unmap_pages(ctrl->pdev, gd->pages, gd->mappings[j++]);
 
                 element = list_next(element);
             }
+            spin_unlock_irqrestore(&list->lock, flags);
+            
             kfree(gd->mappings);
-
+            gd->mappings = NULL;
         }
 
         if (gd->pages != NULL)
         {
             nvidia_p2p_put_pages(0, 0, map->vaddr, gd->pages);
+            gd->pages = NULL;
         }
 
         kfree(gd);
@@ -346,33 +375,41 @@ int map_gpu_memory(struct map* map, struct list* list)
         return err;
     }
 
-    element = list_next(&list->head);
-
-
+    /* Map pages for each controller with proper locking */
     j = 0;
-    while (element != NULL)
     {
-        ctrl = container_of(element, struct ctrl, list);
-
-        err = nvidia_p2p_dma_map_pages(ctrl->pdev, gd->pages, gd->mappings + (j++));
-        if (err != 0)
+        unsigned long flags;
+        
+        spin_lock_irqsave(&list->lock, flags);
+        element = list_next(&list->head);
+        
+        while (element != NULL)
         {
-            //printk(KERN_ERR "nvidia_p2p_dma_map_pages() failed for nvme%u: %d\n", j-1, err);
-            return err;
-        }
-        //for (i = 0; i < map->n_addrs; ++i)
-        //{
-
-        //   printk("device: %u\ti: %lu\tpaddr: %llx\n", (j-1), i, (uint64_t)  gd->mappings[j-1]->dma_addresses[i]);
-        //}
-        if (j == 1) {
-            for (i = 0; i < map->n_addrs; ++i)
+            ctrl = container_of(element, struct ctrl, list);
+            
+            /* We need to release the lock before calling nvidia functions */
+            spin_unlock_irqrestore(&list->lock, flags);
+            
+            err = nvidia_p2p_dma_map_pages(ctrl->pdev, gd->pages, gd->mappings + (j++));
+            if (err != 0)
             {
-                map->addrs[i] = gd->mappings[0]->dma_addresses[i];
-                //printk("++paddr: %llx\n", (uint64_t) map->addrs[i]);
+                //printk(KERN_ERR "nvidia_p2p_dma_map_pages() failed for nvme%u: %d\n", j-1, err);
+                return err;
             }
+            
+            if (j == 1) {
+                for (i = 0; i < map->n_addrs; ++i)
+                {
+                    map->addrs[i] = gd->mappings[0]->dma_addresses[i];
+                }
+            }
+            
+            /* Re-acquire lock and get next element */
+            spin_lock_irqsave(&list->lock, flags);
+            element = list_next(element);
         }
-        element = list_next(element);
+        
+        spin_unlock_irqrestore(&list->lock, flags);
     }
 
 

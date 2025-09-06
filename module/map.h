@@ -4,6 +4,7 @@
 #include "list.h"
 #include <linux/types.h>
 #include <linux/mm_types.h>
+#include <linux/pci.h>
 
 
 /* Forward declaration */
@@ -28,7 +29,7 @@ struct map
     void*               data;           /* Custom data */
     release             release;        /* Custom callback for unmapping and releasing memory */
     unsigned long       n_addrs;        /* Number of mapped pages */
-    uint64_t            addrs[1];       /* Bus addresses */
+    uint64_t            addrs[];        /* Bus addresses - flexible array member */
 };
 
 
@@ -52,6 +53,16 @@ void unmap_and_release(struct map* map);
  * Lock and map GPU device memory.
  */
 struct map* map_device_memory(struct list* list, const struct ctrl* ctrl, u64 vaddr, unsigned long n_pages, struct list* ctrl_list);
+
+/*
+ * Release GPU memory mapping.
+ */
+void release_gpu_memory(struct map* map);
+
+/*
+ * Map GPU memory for all controllers.
+ */
+int map_gpu_memory(struct map* map, struct list* list);
 #endif
 
 

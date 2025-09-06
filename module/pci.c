@@ -2,6 +2,9 @@
 #include "list.h"
 #include "ctrl.h"
 #include "map.h"
+#ifdef _CUDA
+#include "nvidia_wrapper.h"
+#endif
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/kernel.h>
@@ -23,7 +26,7 @@
 
 MODULE_AUTHOR("Jonas Markussen <jonassm@ifi.uio.no>");
 MODULE_DESCRIPTION("Set up DMA mappings for userspace buffers");
-MODULE_LICENSE("Dual BSD/GPL");
+MODULE_LICENSE("Dual MIT/GPL");
 MODULE_VERSION("0.3");
 
 
@@ -263,18 +266,26 @@ static void remove_pci_dev(struct pci_dev* dev)
         return;
     }
 
-    --curr_ctrls;
-
     // Find controller reference
     ctrl = ctrl_find_by_pci_dev(&ctrl_list, dev);
-    ctrl_put(ctrl);
+    if (ctrl == NULL)
+    {
+        printk(KERN_WARNING "Controller not found for device %02x:%02x.%1x\n",
+                dev->bus->number, PCI_SLOT(dev->devfn), PCI_FUNC(dev->devfn));
+        return;
+    }
+
+    // Disable PCI device first
+    pci_clear_master(dev);
+    pci_disable_device(dev);
 
     // Release device memory
     pci_release_region(dev, 0);
 
-    // Disable PCI device
-    pci_clear_master(dev);
-    pci_disable_device(dev);
+    // Remove controller and its character device
+    ctrl_put(ctrl);
+    
+    --curr_ctrls;
 
     printk(KERN_DEBUG "Controller device removed: %02x:%02x.%1x\n",
             dev->bus->number, PCI_SLOT(dev->devfn), PCI_FUNC(dev->devfn));
@@ -284,16 +295,27 @@ static void remove_pci_dev(struct pci_dev* dev)
 static unsigned long clear_map_list(struct list* list)
 {
     unsigned long i = 0;
-    struct list_node* ptr = list_next(&list->head);
+    struct list_node* ptr;
     struct map* map;
+    unsigned long flags;
 
-    while (ptr != NULL)
+    /* Keep removing the first element until list is empty */
+    while (1)
     {
+        spin_lock_irqsave(&list->lock, flags);
+        ptr = list_next(&list->head);
+        if (ptr == NULL)
+        {
+            spin_unlock_irqrestore(&list->lock, flags);
+            break;
+        }
+        /* Get reference to map before releasing lock */
         map = container_of(ptr, struct map, list);
+        spin_unlock_irqrestore(&list->lock, flags);
+        
+        /* unmap_and_release will handle list removal with proper locking */
         unmap_and_release(map);
         ++i;
-
-        ptr = list_next(&list->head);
     }
 
     return i;
@@ -319,6 +341,14 @@ static int __init libnvm_helper_entry(void)
     list_init(&host_list);
     list_init(&device_list);
 
+#ifdef _CUDA
+    err = init_nvidia_symbols();
+    if (err != 0) {
+        printk(KERN_WARNING "Failed to initialize NVIDIA P2P symbols, GPU memory mapping disabled\n");
+        // Continue without GPU support
+    }
+#endif
+
     // Set up character device creation
     err = alloc_chrdev_region(&dev_first, 0, max_num_ctrls, DRIVER_NAME);
     if (err < 0)
@@ -328,7 +358,7 @@ static int __init libnvm_helper_entry(void)
     }
 
     // Create character device class
-    dev_class = class_create(THIS_MODULE, DRIVER_NAME);
+    dev_class = class_create(DRIVER_NAME);
     if (IS_ERR(dev_class))
     {
         unregister_chrdev_region(dev_first, max_num_ctrls);
@@ -356,6 +386,12 @@ static void __exit libnvm_helper_exit(void)
 {
     unsigned long remaining = 0;
 
+    /* First unregister the PCI driver to prevent new devices from being added */
+    printk(KERN_DEBUG DRIVER_NAME " Before pci_unregister_driver\n");
+    pci_unregister_driver(&driver);
+    printk(KERN_DEBUG DRIVER_NAME " After pci_unregister_driver\n");
+    
+    /* Now clean up any remaining mappings */
     remaining = clear_map_list(&device_list);
     if (remaining != 0)
     {
@@ -367,11 +403,14 @@ static void __exit libnvm_helper_exit(void)
     {
         printk(KERN_NOTICE "%lu host memory mappings were still in use on unload\n", remaining);
     }
-    printk(KERN_DEBUG DRIVER_NAME " Before pci_unregister_driver\n");
-    pci_unregister_driver(&driver);
-    printk(KERN_DEBUG DRIVER_NAME " After pci_unregister_driver\n");
+    
+    /* Clean up device class and character devices */
     class_destroy(dev_class);
     unregister_chrdev_region(dev_first, max_num_ctrls);
+
+#ifdef _CUDA
+    cleanup_nvidia_symbols();
+#endif
 
     printk(KERN_DEBUG DRIVER_NAME " unloaded\n");
 }

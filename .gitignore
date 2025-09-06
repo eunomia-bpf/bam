@@ -37,3 +37,5 @@ build/*
 cscope.out
 cscope.in.out
 cscope.po.out
+Makefile
+CMakeFiles

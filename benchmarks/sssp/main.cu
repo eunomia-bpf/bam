@@ -448,7 +448,7 @@ int main(int argc, char *argv[]) {
                     weightList_h[i] += offset;
 
                 break;
-            case UVM_READONLY:
+            case UVM_READONLY: {
                 cuda_err_chk(cudaMallocManaged((void**)&edgeList_d, edge_size));
                 cuda_err_chk(cudaMallocManaged((void**)&weightList_d, weight_size));
                 file.read((char*)edgeList_d, edge_size);
@@ -457,8 +457,9 @@ int main(int argc, char *argv[]) {
                 for (uint64_t i = 0; i < weight_count; i++)
                     weightList_d[i] += offset;
 
-                cuda_err_chk(cudaMemAdvise(edgeList_d, edge_size, cudaMemAdviseSetReadMostly, settings.cudaDevice));
-                cuda_err_chk(cudaMemAdvise(weightList_d, weight_size, cudaMemAdviseSetReadMostly, settings.cudaDevice));
+                cudaMemLocation cudaDevice1 = {cudaMemLocationTypeDevice, (int)settings.cudaDevice};
+                cuda_err_chk(cudaMemAdvise(edgeList_d, edge_size, cudaMemAdviseSetReadMostly, cudaDevice1));
+                cuda_err_chk(cudaMemAdvise(weightList_d, weight_size, cudaMemAdviseSetReadMostly, cudaDevice1));
 
                 cuda_err_chk(cudaMemGetInfo(&freebyte, &totalbyte));
                 if (totalbyte < 16*1024*1024*1024ULL)
@@ -469,6 +470,7 @@ int main(int argc, char *argv[]) {
                     throttle_memory<<<1,1>>>(pad);
                 }
                 break;
+            }
             case UVM_DIRECT:
             {
 /*
@@ -502,7 +504,8 @@ int main(int argc, char *argv[]) {
                 uint64_t edge_count_4k_aligned = ((edge_count + 2 + 4096 / sizeof(uint64_t)) / (4096 / sizeof(uint64_t))) * (4096 / sizeof(uint64_t));
                 uint64_t edge_size_4k_aligned = edge_count_4k_aligned * sizeof(uint64_t);
                 cuda_err_chk(cudaMallocManaged((void**)&edgeList_d, edge_size_4k_aligned));
-                cuda_err_chk(cudaMemAdvise(edgeList_d, edge_size_4k_aligned, cudaMemAdviseSetAccessedBy, settings.cudaDevice));
+                cudaMemLocation cudaDevice1 = {cudaMemLocationTypeDevice, (int)settings.cudaDevice};
+                cuda_err_chk(cudaMemAdvise(edgeList_d, edge_size_4k_aligned, cudaMemAdviseSetAccessedBy, cudaDevice1));
                 high_resolution_clock::time_point ft1 = high_resolution_clock::now();
                       
                 if (fread(edgeList_d, sizeof(uint64_t), edge_count_4k_aligned, file_temp) != edge_count + 2) {
@@ -546,7 +549,8 @@ int main(int argc, char *argv[]) {
                  
                 for (uint64_t i = 0; i < weight_count; i++)
                     weightList_d[i] += offset;
-                cuda_err_chk(cudaMemAdvise(edgeList_d, weight_size_4k_aligned, cudaMemAdviseSetAccessedBy, settings.cudaDevice));
+                cudaMemLocation cudaDevice = {cudaMemLocationTypeDevice, (int)settings.cudaDevice};
+                cuda_err_chk(cudaMemAdvise(edgeList_d, weight_size_4k_aligned, cudaMemAdviseSetAccessedBy, cudaDevice));
                  
                 file2.open(weight_file.c_str(), std::ios::in | std::ios::binary);
                 if (!file2.is_open()) {
@@ -556,7 +560,7 @@ int main(int argc, char *argv[]) {
                 break;
 
             }
-            case BAFS_DIRECT:
+            case BAFS_DIRECT: {
                 cuda_err_chk(cudaMemGetInfo(&freebyte, &totalbyte));
                 if (totalbyte < 16*1024*1024*1024ULL)
                     printf("total memory sizeo of current GPU is %llu byte, no need to throttle\n", totalbyte);
@@ -566,7 +570,10 @@ int main(int argc, char *argv[]) {
                     throttle_memory<<<1,1>>>(pad);
                 }
                 break;
-
+            }
+            default:
+                printf("ERROR: Invalid Mem type specified\n");
+                break;
         }
 
         file.close();

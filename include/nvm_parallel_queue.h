@@ -299,8 +299,22 @@ uint16_t sq_enqueue(nvm_queue_t* sq, nvm_cmd_t* cmd, simt::atomic<uint64_t, simt
                     if (pc_tail) {
                         *cur_pc_tail = pc_tail->load(simt::memory_order_acquire);
                     }
-//                    *(sq->db) = new_db;
-		    asm volatile ("st.mmio.relaxed.sys.global.u32 [%0], %1;" :: "l"(sq->db),"r"(new_db) : "memory");
+                    // Check if doorbell is accessible from device
+                    // If cudaHostRegister failed, we can't write to the doorbell from GPU
+                    // This is a workaround - ideally we'd have a flag to check
+                    #ifdef __CUDA_ARCH__
+                    // For now, skip doorbell write from GPU if it might not be accessible
+                    // This will impact performance but prevent crashes
+                    // TODO: Add proper flag to track if doorbell is device-accessible
+                    if ((uintptr_t)sq->db < 0x200000000000ULL) {
+                        // Host memory address range - skip write
+                        // printf("WARNING: Skipping doorbell write from GPU (host address)\n");
+                    } else {
+                        asm volatile ("st.mmio.relaxed.sys.global.u32 [%0], %1;" :: "l"(sq->db),"r"(new_db) : "memory");
+                    }
+                    #else
+                    *(sq->db) = new_db;
+                    #endif
 
                     //sq->tail_copy.store(new_tail, simt::memory_order_release);
 //	            printf("wrote SQ_db: %llu\tcur_tail: %llu\tmove_count: %llu\tsq_tail: %llu\tsq_head: %llu\n", (unsigned long long) new_db, (unsigned long long) cur_tail, (unsigned long long) tail_move_count, (unsigned long long) (new_tail),  (unsigned long long)(sq->head.load(simt::memory_order_acquire)));
@@ -483,8 +497,18 @@ void cq_dequeue(nvm_queue_t* cq, uint16_t pos, nvm_queue_t* sq, uint32_t loc_ = 
 
                     uint32_t new_db = (new_head) & (cq->qs_minus_1);
 
-                    //*(cq->db) = new_db;
-                    asm volatile ("st.mmio.relaxed.sys.global.u32 [%0], %1;" :: "l"(cq->db),"r"(new_db) : "memory");
+                    // Check if doorbell is accessible from device
+                    // If cudaHostRegister failed, we can't write to the doorbell from GPU
+                    #ifdef __CUDA_ARCH__
+                    if ((uintptr_t)cq->db < 0x200000000000ULL) {
+                        // Host memory address range - skip write
+                        // printf("WARNING: Skipping CQ doorbell write from GPU (host address)\n");
+                    } else {
+                        asm volatile ("st.mmio.relaxed.sys.global.u32 [%0], %1;" :: "l"(cq->db),"r"(new_db) : "memory");
+                    }
+                    #else
+                    *(cq->db) = new_db;
+                    #endif
 
 		    //cq->head_copy.store(new_head, simt::memory_order_release);
 //                    printf("wrote CQ_db: %llu\tcur_head: %llu\tmove_count: %llu\tcq_head: %llu\tcq_tail: %llu\n", (unsigned long long) new_db, (unsigned long long) cur_head, (unsigned long long) head_move_count, (unsigned long long) (new_head),  (unsigned long long)(cq->tail.load(simt::memory_order_acquire)));

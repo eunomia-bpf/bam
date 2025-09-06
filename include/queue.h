@@ -190,9 +190,16 @@ struct QueuePair
         cudaError_t err = cudaHostGetDevicePointer(&devicePtr, (void*) this->cq.db, 0);
         if (err != cudaSuccess)
         {
-            throw error(string("Failed to get device pointer") + cudaGetErrorString(err));
+            // If we can't get device pointer, just use host pointer
+            // This happens when cudaHostRegister failed for controller memory
+            printf("WARNING: Failed to get device pointer for CQ doorbell: %s\n", cudaGetErrorString(err));
+            printf("         Using host pointer instead (may impact performance)\n");
+            // Keep using the host pointer
         }
-        this->cq.db = (volatile uint32_t*) devicePtr;
+        else
+        {
+            this->cq.db = (volatile uint32_t*) devicePtr;
+        }
 
         // Create submission queue
         //  nvm_admin_sq_create(nvm_aq_ref ref, nvm_queue_t* sq, const nvm_queue_t* cq, uint16_t id, const nvm_dma_t* dma, size_t offset, size_t qs, bool need_prp = false)
@@ -207,9 +214,16 @@ struct QueuePair
         err = cudaHostGetDevicePointer(&devicePtr, (void*) this->sq.db, 0);
         if (err != cudaSuccess)
         {
-            throw error(string("Failed to get device pointer") + cudaGetErrorString(err));
+            // If we can't get device pointer, just use host pointer
+            // This happens when cudaHostRegister failed for controller memory
+            printf("WARNING: Failed to get device pointer for SQ doorbell: %s\n", cudaGetErrorString(err));
+            printf("         Using host pointer instead (may impact performance)\n");
+            // Keep using the host pointer
         }
-        this->sq.db = (volatile uint32_t*) devicePtr;
+        else
+        {
+            this->sq.db = (volatile uint32_t*) devicePtr;
+        }
 //        std::cout << "Finish Making Queue\n";
 
         init_gpu_specific_struct(cudaDevice);

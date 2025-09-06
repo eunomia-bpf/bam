@@ -52,44 +52,60 @@ void ctrl_put(struct ctrl* ctrl)
 
 struct ctrl* ctrl_find_by_pci_dev(const struct list* list, const struct pci_dev* pdev)
 {
-    const struct list_node* element = list_next(&list->head);
+    const struct list_node* element;
     struct ctrl* ctrl;
+    struct ctrl* found = NULL;
+    unsigned long flags;
 
+    spin_lock_irqsave(&((struct list*)list)->lock, flags);
+    
+    element = list_next(&list->head);
     while (element != NULL)
     {
         ctrl = container_of(element, struct ctrl, list);
 
         if (ctrl->pdev == pdev)
         {
-            return ctrl;
+            found = ctrl;
+            break;
         }
 
         element = list_next(element);
     }
+    
+    spin_unlock_irqrestore(&((struct list*)list)->lock, flags);
 
-    return NULL;
+    return found;
 }
 
 
 
 struct ctrl* ctrl_find_by_inode(const struct list* list, const struct inode* inode)
 {
-    const struct list_node* element = list_next(&list->head);
+    const struct list_node* element;
     struct ctrl* ctrl;
+    struct ctrl* found = NULL;
+    unsigned long flags;
 
+    spin_lock_irqsave(&((struct list*)list)->lock, flags);
+    
+    element = list_next(&list->head);
     while (element != NULL)
     {
         ctrl = container_of(element, struct ctrl, list);
 
         if (&ctrl->cdev == inode->i_cdev)
         {
-            return ctrl;
+            found = ctrl;
+            break;
         }
 
         element = list_next(element);
     }
+    
+    spin_unlock_irqrestore(&((struct list*)list)->lock, flags);
 
-    return NULL;
+    return found;
 }
 
 

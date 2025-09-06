@@ -36,7 +36,7 @@ struct list
 /*
  * Initialize element.
  */
-static void __always_inline list_node_init(struct list_node* element)
+static __always_inline void list_node_init(struct list_node* element)
 {
     element->list = NULL;
     element->next = NULL;

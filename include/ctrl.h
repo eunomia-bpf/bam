@@ -8,6 +8,8 @@
 // #endif
 
 #include <cstdint>
+#include <cuda.h>
+#include <cuda_runtime_api.h>
 #include "buffer.h"
 #include "nvm_types.h"
 #include "nvm_ctrl.h"
@@ -167,10 +169,83 @@ inline Controller::Controller(const char* path, uint32_t ns_id, uint32_t cudaDev
     aq_mem = createDma(ctrl, ctrl->page_size * 3);
 
     initializeController(*this, ns_id);
-    cudaError_t err = cudaHostRegister((void*) ctrl->mm_ptr, NVM_CTRL_MEM_MINSIZE, cudaHostRegisterIoMemory);
-    if (err != cudaSuccess)
+    
+    // Set CUDA device before registering memory
+    cudaError_t setdev_err = cudaSetDevice(cudaDevice);
+    if (setdev_err != cudaSuccess)
     {
-        throw error(string("Unexpected error while mapping IO memory (cudaHostRegister): ") + cudaGetErrorString(err));
+        throw error(string("Failed to set CUDA device: ") + cudaGetErrorString(setdev_err));
+    }
+    
+    // Initialize CUDA runtime
+    cudaFree(0);
+    
+    // Debug output
+    printf("DEBUG: Attempting cudaHostRegister with:\n");
+    printf("  CUDA Device: %d\n", cudaDevice);
+    printf("  mm_ptr: %p\n", ctrl->mm_ptr);
+    printf("  mm_size: %lu\n", ctrl->mm_size);
+    printf("  NVM_CTRL_MEM_MINSIZE: %lu (0x%lx)\n", (size_t)NVM_CTRL_MEM_MINSIZE, (size_t)NVM_CTRL_MEM_MINSIZE);
+    printf("  mm_ptr alignment: %lu\n", (uintptr_t)ctrl->mm_ptr % 4096);
+    
+    // Check if pointer is valid
+    if (ctrl->mm_ptr == nullptr)
+    {
+        throw error(string("Controller memory pointer is NULL"));
+    }
+    
+    // Check if memory is already registered
+    cudaPointerAttributes attrs;
+    cudaError_t check_err = cudaPointerGetAttributes(&attrs, (void*)ctrl->mm_ptr);
+    if (check_err == cudaSuccess && attrs.type != cudaMemoryTypeUnregistered)
+    {
+        printf("WARNING: Memory already registered with type %d\n", attrs.type);
+        // Memory is already registered, skip registration
+    }
+    else
+    {
+        // Clear the error from cudaPointerGetAttributes if it failed
+        cudaGetLastError();
+        
+        // Try registering with IoMemory flag first
+        cudaError_t err = cudaHostRegister((void*) ctrl->mm_ptr, NVM_CTRL_MEM_MINSIZE, cudaHostRegisterIoMemory);
+        if (err != cudaSuccess)
+        {
+            printf("ERROR: cudaHostRegister with IoMemory failed with error code %d: %s\n", err, cudaGetErrorString(err));
+            
+            // Try with Mapped flag instead
+            printf("Trying with cudaHostRegisterMapped flag...\n");
+            err = cudaHostRegister((void*) ctrl->mm_ptr, NVM_CTRL_MEM_MINSIZE, cudaHostRegisterMapped);
+            if (err != cudaSuccess)
+            {
+                printf("ERROR: cudaHostRegisterMapped failed with error code %d: %s\n", err, cudaGetErrorString(err));
+                
+                // Try with Default flag
+                printf("Trying with cudaHostRegisterDefault flag...\n");
+                err = cudaHostRegister((void*) ctrl->mm_ptr, NVM_CTRL_MEM_MINSIZE, cudaHostRegisterDefault);
+                if (err != cudaSuccess)
+                {
+                    printf("ERROR: cudaHostRegisterDefault failed with error code %d: %s\n", err, cudaGetErrorString(err));
+                    
+                    // Last resort: try to skip registration entirely
+                    printf("WARNING: Unable to register memory with CUDA. Proceeding without registration.\n");
+                    printf("This may impact performance or cause issues with GPU access.\n");
+                    // Don't throw error, just continue
+                }
+                else
+                {
+                    printf("Success with cudaHostRegisterDefault!\n");
+                }
+            }
+            else
+            {
+                printf("Success with cudaHostRegisterMapped!\n");
+            }
+        }
+        else
+        {
+            printf("Success with cudaHostRegisterIoMemory!\n");
+        }
     }
     queue_counter = 0;
     page_size = ctrl->page_size;

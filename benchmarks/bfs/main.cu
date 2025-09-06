@@ -1310,10 +1310,11 @@ int main(int argc, char *argv[]) {
                  cuda_err_chk(cudaMalloc((void**)&edgeList_d, edge_size));
                  file.close();
                  break;
-             case UVM_READONLY:
+             case UVM_READONLY: {
                  cuda_err_chk(cudaMallocManaged((void**)&edgeList_d, edge_size));
                  file.read((char*)edgeList_d, edge_size);
-                 cuda_err_chk(cudaMemAdvise(edgeList_d, edge_size, cudaMemAdviseSetReadMostly, settings.cudaDevice));
+                 cudaMemLocation cudaDevice = {cudaMemLocationTypeDevice, settings.cudaDevice};
+                 cuda_err_chk(cudaMemAdvise(edgeList_d, edge_size, cudaMemAdviseSetReadMostly, cudaDevice));
      
                  cuda_err_chk(cudaMemGetInfo(&freebyte, &totalbyte));
                  if (totalbyte < 16*1024*1024*1024ULL)
@@ -1325,19 +1326,9 @@ int main(int argc, char *argv[]) {
                  }
                  file.close();
                  break;
-             case UVM_DIRECT:
-             {
-             /*    cuda_err_chk(cudaMallocManaged((void**)&edgeList_d, edge_size));
-                 // printf("Address is %p   %p\n", edgeList_d, &edgeList_d[0]); 
-                 high_resolution_clock::time_point ft1 = high_resolution_clock::now();
-                 file.read((char*)edgeList_d, edge_size);
-                 file.close();
-                 high_resolution_clock::time_point ft2 = high_resolution_clock::now();
-                 duration<double> time_span = duration_cast<duration<double>>(ft2 -ft1);
-                 std::cout<< "edge file read time: "<< time_span.count() <<std::endl;
-                 cuda_err_chk(cudaMemAdvise(edgeList_d, edge_size, cudaMemAdviseSetAccessedBy, settings.cudaDevice));
-                 break;
-             */
+            }
+             case UVM_DIRECT: {
+             
 
                  file.close();
                  for (uint64_t i = 0; i < vertex_count + 1; i++) {
@@ -1352,7 +1343,8 @@ int main(int argc, char *argv[]) {
                  uint64_t edge_count_4k_aligned = ((edge_count + 2 + 4096 / sizeof(uint64_t)) / (4096 / sizeof(uint64_t))) * (4096 / sizeof(uint64_t));
                  uint64_t edge_size_4k_aligned = edge_count_4k_aligned * sizeof(uint64_t);
                  cuda_err_chk(cudaMallocManaged((void**)&edgeList_d, edge_size_4k_aligned));
-                 cuda_err_chk(cudaMemAdvise(edgeList_d, edge_size_4k_aligned, cudaMemAdviseSetAccessedBy, settings.cudaDevice));
+                 cudaMemLocation cudaDevice1 = {cudaMemLocationTypeDevice, settings.cudaDevice};
+                 cuda_err_chk(cudaMemAdvise(edgeList_d, edge_size_4k_aligned, cudaMemAdviseSetAccessedBy, cudaDevice1));
                  high_resolution_clock::time_point ft1 = high_resolution_clock::now();
                        
                  if (fread(edgeList_d, sizeof(uint64_t), edge_count_4k_aligned, file_temp) != edge_count + 2) {
@@ -1371,17 +1363,8 @@ int main(int argc, char *argv[]) {
                      exit(1);
                  }   
                  break;
-             }
-             case BAFS_DIRECT: 
-                 //cuda_err_chk(cudaMemGetInfo(&freebyte, &totalbyte));
-                 //if (totalbyte < 16*1024*1024*1024ULL)
-                 //    printf("total memory sizeo of current GPU is %llu byte, no need to throttle\n", totalbyte);
-                 //else {
-                 //    printf("total memory sizeo of current GPU is %llu byte, throttling %llu byte.\n", totalbyte, totalbyte - 16*1024*1024*1024ULL);
-                 //    cuda_err_chk(cudaMalloc((void**)&pad, totalbyte - 16*1024*1024*1024ULL));
-                 //    throttle_memory<<<1,1>>>(pad);
-                 //}
-                 break;
+            }
+             
               default: 
                  printf("ERROR: Invalid Mem type specified\n");
                  break;
