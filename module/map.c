@@ -367,7 +367,8 @@ int map_gpu_memory(struct map* map, struct list* list)
     map->data = gd;
     map->release = release_gpu_memory;
 
-    err = nvidia_p2p_get_pages(0, 0, map->vaddr, GPU_PAGE_SIZE * map->n_addrs, &gd->pages, 
+    /* For NVIDIA P2P: p2p_token is typically the GPU address, va_space is the PID */
+    err = nvidia_p2p_get_pages(map->vaddr, current->tgid, map->vaddr, GPU_PAGE_SIZE * map->n_addrs, &gd->pages,
             (void (*)(void*)) force_release_gpu_memory, map);
     if (err != 0)
     {
