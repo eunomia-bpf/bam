@@ -681,6 +681,9 @@ int map_gpu_memory(struct map* map, struct list* list)
                 nvidia_p2p_free_page_table(gd->pages);
             kfree(gd->mappings);
             kfree(gd);
+            /* Prevent double-free by clearing pointers */
+            map->data = NULL;
+            map->release = NULL;
             return err;
         }
     }
@@ -718,6 +721,9 @@ int map_gpu_memory(struct map* map, struct list* list)
                     nvidia_p2p_put_pages(0, 0, map->vaddr, gd->pages);
                     kfree(gd->mappings);
                     kfree(gd);
+                    /* Prevent double-free by clearing pointers */
+                    map->data = NULL;
+                    map->release = NULL;
                     return err;
                 }
 
